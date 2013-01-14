@@ -90,24 +90,19 @@ class Coroutine:
             if waiting[0]:
                 waiting[0] = False
                 waiting[1] = result
-
-                return result
-
-            # получили результат из Deferred
-            del self._active_defer
-
-            return self._resume(result)
+            else:
+                del self._active_defer
+                self._resume(result)
 
         deferred.addBoth(peeker)
 
         if waiting[0]:
-            # Haven't called back yet, set flag so that we get reinvoked
+            # haven't called back yet, set flag so that we get reinvoked
             waiting[0] = False
             return False, None
 
-        # получили результат сразу
+        # got immediate result
         del self._active_defer
-
         return True, waiting[1]
 
     def _resume(self, result):
