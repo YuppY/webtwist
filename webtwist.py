@@ -106,10 +106,6 @@ class Coroutine:
         return True, waiting[1]
 
     def _resume(self, result):
-        if self._stopped:
-            # we have been stopped before start
-            return
-
         while self._stack:
             gen = self._stack[-1]
 
@@ -140,20 +136,21 @@ class Coroutine:
 
             assert isinstance(result, defer.Deferred), 'Generators should yield generators or deferreds, got %r instead' % type(result)
 
-            # пытаемся получить результат сразу, чтобы не уйти в глубину стека
+            # trying to get result from synchronous Deferred
             peeked, result = self._attach_deferred(result)
             if not peeked: return
 
-        # конечный результат
-        self._defer.callback(result)
+        # coroutine result
+        if not self._stopped:
+            self._defer.callback(result)
 
     def start(self):
-        if not self._paused:
+        if not (self._paused or self._stopped):
             self._resume(None)
 
         return self._defer
 
-    # интерфейс IPushProducer
+    # IPushProducer API
 
     def pauseProducing(self):
         log.debug('Coroutine.pauseProducing')
@@ -182,15 +179,12 @@ class Coroutine:
     def stopProducing(self):
         log.debug('Coroutine.stopProducing')
 
-        # setting flag to prevent resume with CancelledError or further start
+        # setting flag to prevent request finish with CancelledError or further start
         self._stopped = True
 
         if self._active_defer is not None:
             # cancel active deferred
             self._active_defer.cancel()
-
-            # notify active generator about cancel
-            self._stack[-1].close()
 
 class Query:
 
@@ -251,7 +245,7 @@ class Request(server.Request):
     query = Query()
 
     def requestReceived(self, command, path, version):
-        # разбираем query
+        # query parsing
         if command == 'GET':
             path_query = path.split('?', 1)
 
@@ -280,6 +274,8 @@ class HandledResource(resource.Resource):
 
     def _render_coroutine(self, request, coroutine):
         def finish_request(result, failed=False):
+            log.debug('HandledResource coroutine finished with %r (failed=%r)', result, failed)
+
             request.unregisterProducer()
 
             if failed:
@@ -288,7 +284,7 @@ class HandledResource(resource.Resource):
                 result = '' if result is None else str(result)
 
                 if not request.startedWriting:
-                    # чтобы не выводить как chunked
+                    # do not produce chunked response
                     request.setHeader('content-length', str(len(result)))
 
                 request.write(result)
@@ -344,7 +340,6 @@ def parse_route_pattern(pattern):
     method, path = match.groups()
     if method is None: method = 'GET'
 
-    # паттерн для пути
     path_pattern = re.compile(''.join(
         '(?P<%s>.+?)' % re.escape(chunk) if (i % 3 == 2) else re.escape(chunk)
         for i, chunk in enumerate(PATH_PATTERN.split(path))
